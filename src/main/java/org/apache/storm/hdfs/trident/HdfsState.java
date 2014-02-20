@@ -14,6 +14,7 @@ import org.apache.storm.hdfs.trident.format.RecordFormat;
 import org.apache.storm.hdfs.trident.format.SequenceFormat;
 import org.apache.storm.hdfs.trident.rotation.FileRotationPolicy;
 
+import org.apache.storm.hdfs.trident.sync.SyncPolicy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import storm.trident.operation.TridentCollector;
@@ -39,6 +40,7 @@ public class HdfsState implements State {
         protected int rotation = 0;
         protected Configuration hdfsConfig;
         protected ArrayList<RotationAction> rotationActions = new ArrayList<RotationAction>();
+        protected SyncPolicy syncPolicy;
 
         abstract void closeOutputFile() throws IOException;
 
@@ -56,7 +58,7 @@ public class HdfsState implements State {
 
             Path newFile = createOutputFile();
             LOG.info("Performing {} file rotation actions.", this.rotationActions.size());
-            for(RotationAction action : this.rotationActions){
+            for (RotationAction action : this.rotationActions) {
                 action.execute(this.fs, this.currentFile);
             }
             this.currentFile = newFile;
@@ -66,18 +68,18 @@ public class HdfsState implements State {
 
         }
 
-        void prepare(Map conf, int partitionIndex, int numPartitions){
+        void prepare(Map conf, int partitionIndex, int numPartitions) {
             if (this.rotationPolicy == null) throw new IllegalStateException("RotationPolicy must be specified.");
             if (this.fsUrl == null) {
                 throw new IllegalStateException("File system URL must be specified.");
             }
             this.fileNameFormat.prepare(conf, partitionIndex, numPartitions);
             this.hdfsConfig = new Configuration();
-            try{
+            try {
                 doPrepare(conf, partitionIndex, numPartitions);
                 this.currentFile = createOutputFile();
 
-            } catch (Exception e){
+            } catch (Exception e) {
                 throw new RuntimeException("Error preparing HdfsState: " + e.getMessage(), e);
             }
         }
@@ -90,27 +92,32 @@ public class HdfsState implements State {
         protected RecordFormat format;
         private long offset = 0;
 
-        public HdfsFileOptions withFsUrl(String fsUrl){
+        public HdfsFileOptions withFsUrl(String fsUrl) {
             this.fsUrl = fsUrl;
             return this;
         }
 
-        public HdfsFileOptions withFileNameFormat(FileNameFormat fileNameFormat){
+        public HdfsFileOptions withFileNameFormat(FileNameFormat fileNameFormat) {
             this.fileNameFormat = fileNameFormat;
             return this;
         }
 
-        public HdfsFileOptions withRecordFormat(RecordFormat format){
+        public HdfsFileOptions withRecordFormat(RecordFormat format) {
             this.format = format;
             return this;
         }
 
-        public HdfsFileOptions withRotationPolicy(FileRotationPolicy rotationPolicy){
+        public HdfsFileOptions withRotationPolicy(FileRotationPolicy rotationPolicy) {
             this.rotationPolicy = rotationPolicy;
             return this;
         }
 
-        public HdfsFileOptions addRotationAction(RotationAction action){
+        public HdfsFileOptions withSyncPolicy(SyncPolicy syncPolicy) {
+            this.syncPolicy = syncPolicy;
+            return this;
+        }
+
+        public HdfsFileOptions addRotationAction(RotationAction action) {
             this.rotationActions.add(action);
             return this;
         }
@@ -140,7 +147,12 @@ public class HdfsState implements State {
             out.write(bytes);
             this.offset += bytes.length;
 
-            if(this.rotationPolicy.mark(tuple, this.offset)){
+            if (this.syncPolicy.mark(tuple, this.offset)) {
+                this.out.hsync();
+                this.syncPolicy.reset();
+            }
+
+            if (this.rotationPolicy.mark(tuple, this.offset)) {
                 rotateOutputFile();
                 this.offset = 0;
                 this.rotationPolicy.reset();
@@ -154,8 +166,10 @@ public class HdfsState implements State {
         private SequenceFile.Writer writer;
         private String compressionCodec = "default";
         private transient CompressionCodecFactory codecFactory;
+        protected SyncPolicy syncPolicy;
 
-        public SequenceFileOptions withCompressionCodec(String codec){
+
+        public SequenceFileOptions withCompressionCodec(String codec) {
             this.compressionCodec = codec;
             return this;
         }
@@ -180,13 +194,18 @@ public class HdfsState implements State {
             return this;
         }
 
-        public SequenceFileOptions withCompressionType(SequenceFile.CompressionType compressionType){
+        public SequenceFileOptions withCompressionType(SequenceFile.CompressionType compressionType) {
             this.compressionType = compressionType;
             return this;
         }
 
-        public SequenceFileOptions addRotationAction(RotationAction action){
+        public SequenceFileOptions addRotationAction(RotationAction action) {
             this.rotationActions.add(action);
+            return this;
+        }
+
+        public SequenceFileOptions withSyncPolicy(SyncPolicy syncPolicy) {
+            this.syncPolicy = syncPolicy;
             return this;
         }
 
@@ -224,6 +243,13 @@ public class HdfsState implements State {
                 this.writer.append(this.format.key(tuple), this.format.value(tuple));
                 long offset = this.writer.getLength();
 
+
+                if (this.syncPolicy.mark(tuple, offset)) {
+                    this.writer.hsync();
+                    ;
+                    this.syncPolicy.reset();
+                }
+
                 if (this.rotationPolicy.mark(tuple, offset)) {
                     rotateOutputFile();
                     this.rotationPolicy.reset();
@@ -240,11 +266,11 @@ public class HdfsState implements State {
     public static final Logger LOG = LoggerFactory.getLogger(HdfsState.class);
     private Options options;
 
-    HdfsState(Options options){
+    HdfsState(Options options) {
         this.options = options;
     }
 
-    void prepare(Map conf, IMetricsContext metrics, int partitionIndex, int numPartitions){
+    void prepare(Map conf, IMetricsContext metrics, int partitionIndex, int numPartitions) {
         this.options.prepare(conf, partitionIndex, numPartitions);
     }
 
@@ -256,12 +282,12 @@ public class HdfsState implements State {
     public void commit(Long txId) {
     }
 
-    public void updateState(List<TridentTuple> tuples, TridentCollector tridentCollector){
-        try{
-            for(TridentTuple tuple : tuples){
+    public void updateState(List<TridentTuple> tuples, TridentCollector tridentCollector) {
+        try {
+            for (TridentTuple tuple : tuples) {
                 this.options.execute(tuple);
             }
-        } catch (IOException e){
+        } catch (IOException e) {
             LOG.warn("Failing batch due to IOException.", e);
             throw new FailedException(e);
         }
