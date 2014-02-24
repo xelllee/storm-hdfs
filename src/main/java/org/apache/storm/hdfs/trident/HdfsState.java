@@ -93,9 +93,12 @@ public class HdfsState implements State {
         private FSDataOutputStream out;
         protected RecordFormat format;
         private long offset = 0;
+        private String compressionCodec = "default";
         private CompressionCodec codec;
         private CompressionOutputStream compressionOut;
+        private transient CompressionCodecFactory codecFactory;
         private boolean compressed = false;
+
 
         public HdfsFileOptions withFsUrl(String fsUrl) {
             this.fsUrl = fsUrl;
@@ -122,8 +125,8 @@ public class HdfsState implements State {
             return this;
         }
 
-        public HdfsFileOptions withCompressionCodec(CompressionCodec compressionCodec) {
-            this.codec = compressionCodec;
+        public HdfsFileOptions withCompressionCodec(String compressionCodec) {
+            this.compressionCodec = compressionCodec;
             this.compressed = true;
             return this;
         }
@@ -137,6 +140,8 @@ public class HdfsState implements State {
         void doPrepare(Map conf, int partitionIndex, int numPartitions) throws IOException {
             LOG.info("Preparing HDFS Bolt...");
             this.fs = FileSystem.get(URI.create(this.fsUrl), hdfsConfig);
+            this.codecFactory = new CompressionCodecFactory(hdfsConfig);
+            this.codec = this.codecFactory.getCodecByName(this.compressionCodec);
         }
 
         @Override
@@ -180,6 +185,7 @@ public class HdfsState implements State {
                 } else {
                     this.out.hsync();
                 }
+
                 this.syncPolicy.reset();
             }
 
