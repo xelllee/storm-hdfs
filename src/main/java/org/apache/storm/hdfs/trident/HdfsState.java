@@ -7,7 +7,9 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.SequenceFile;
+import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.CompressionCodecFactory;
+import org.apache.hadoop.io.compress.CompressionOutputStream;
 import org.apache.storm.hdfs.common.rotation.RotationAction;
 import org.apache.storm.hdfs.trident.format.FileNameFormat;
 import org.apache.storm.hdfs.trident.format.RecordFormat;
@@ -40,7 +42,7 @@ public class HdfsState implements State {
         protected int rotation = 0;
         protected Configuration hdfsConfig;
         protected ArrayList<RotationAction> rotationActions = new ArrayList<RotationAction>();
-        protected SyncPolicy syncPolicy;
+        protected SyncPolicy syncPolicy = null;
 
         abstract void closeOutputFile() throws IOException;
 
@@ -91,6 +93,9 @@ public class HdfsState implements State {
         private FSDataOutputStream out;
         protected RecordFormat format;
         private long offset = 0;
+        private CompressionCodec codec;
+        private CompressionOutputStream compressionOut;
+        private boolean compressed = false;
 
         public HdfsFileOptions withFsUrl(String fsUrl) {
             this.fsUrl = fsUrl;
@@ -117,6 +122,12 @@ public class HdfsState implements State {
             return this;
         }
 
+        public HdfsFileOptions withCompressionCodec(CompressionCodec compressionCodec) {
+            this.codec = compressionCodec;
+            this.compressed = true;
+            return this;
+        }
+
         public HdfsFileOptions addRotationAction(RotationAction action) {
             this.rotationActions.add(action);
             return this;
@@ -130,6 +141,11 @@ public class HdfsState implements State {
 
         @Override
         void closeOutputFile() throws IOException {
+
+            if (compressed) {
+                compressionOut.finish();
+                compressionOut.close();
+            }
             this.out.hsync();
             this.out.close();
         }
@@ -138,17 +154,32 @@ public class HdfsState implements State {
         Path createOutputFile() throws IOException {
             Path path = new Path(this.fileNameFormat.getPath(), this.fileNameFormat.getName(this.rotation, System.currentTimeMillis()));
             this.out = this.fs.create(path);
+
+            if (compressed) {
+                compressionOut = codec.createOutputStream(out);
+            }
+
             return path;
         }
 
         @Override
         public void execute(TridentTuple tuple) throws IOException {
             byte[] bytes = this.format.format(tuple);
-            out.write(bytes);
+
+            if (compressed) {
+                compressionOut.write(bytes);
+            } else {
+                out.write(bytes);
+            }
+
             this.offset += bytes.length;
 
-            if (this.syncPolicy.mark(tuple, this.offset)) {
-                this.out.hsync();
+            if (this.syncPolicy != null && this.syncPolicy.mark(tuple, this.offset)) {
+                if (compressed) {
+                    this.compressionOut.flush();
+                } else {
+                    this.out.hsync();
+                }
                 this.syncPolicy.reset();
             }
 
@@ -162,7 +193,7 @@ public class HdfsState implements State {
 
     public static class SequenceFileOptions extends Options {
         private SequenceFormat format;
-        private SequenceFile.CompressionType compressionType = SequenceFile.CompressionType.RECORD;
+        private SequenceFile.CompressionType compressionType = SequenceFile.CompressionType.BLOCK;
         private SequenceFile.Writer writer;
         private String compressionCodec = "default";
         private transient CompressionCodecFactory codecFactory;
@@ -234,6 +265,7 @@ public class HdfsState implements State {
         @Override
         void closeOutputFile() throws IOException {
             this.writer.hsync();
+
             this.writer.close();
         }
 
@@ -243,10 +275,8 @@ public class HdfsState implements State {
                 this.writer.append(this.format.key(tuple), this.format.value(tuple));
                 long offset = this.writer.getLength();
 
-
                 if (this.syncPolicy.mark(tuple, offset)) {
                     this.writer.hsync();
-                    ;
                     this.syncPolicy.reset();
                 }
 
