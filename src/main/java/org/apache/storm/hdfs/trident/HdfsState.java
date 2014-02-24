@@ -148,10 +148,27 @@ public class HdfsState implements State {
         void closeOutputFile() throws IOException {
 
             if (compressed) {
-                compressionOut.finish();
+                this.compressionOut.finish();
+                this.out.hsync();
+
+                for (int i = 0; i < 5; i++) {
+                    try {
+                        this.compressionOut.close();
+                        LOG.info("File closed, tried  " + i + " times.");
+                        break;
+                    } catch (IOException ie) {
+                        LOG.info("Can not close compressionOutput for " + i + " times + waiting 200ms .");
+                        try {
+                            Thread.sleep(200);
+                        } catch (InterruptedException ire) {
+                            ire.printStackTrace();
+                        }
+                    }
+                }
+            } else {
+                this.out.hsync();
+                this.out.close();
             }
-            this.out.hsync();
-            this.out.close();
         }
 
         @Override
@@ -180,11 +197,9 @@ public class HdfsState implements State {
 
             if (this.syncPolicy != null && this.syncPolicy.mark(tuple, this.offset)) {
                 if (compressed) {
-                    this.compressionOut.flush();
-                } else {
-                    this.out.hsync();
+                    this.compressionOut.finish();
                 }
-
+                this.out.hsync();
                 this.syncPolicy.reset();
             }
 
