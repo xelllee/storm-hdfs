@@ -148,11 +148,11 @@ public class HdfsState implements State {
         void closeOutputFile() throws IOException {
 
             if (compressed) {
-                compressionOut.finish();
                 compressionOut.close();
+            } else {
+                this.out.hsync();
+                this.out.close();
             }
-            this.out.hsync();
-            this.out.close();
         }
 
         @Override
