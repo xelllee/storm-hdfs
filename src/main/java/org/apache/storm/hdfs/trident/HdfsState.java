@@ -154,7 +154,7 @@ public class HdfsState implements State {
                 for (int i = 0; i < 5; i++) {
                     try {
                         this.compressionOut.close();
-                        LOG.info("File closed, tried  " + i + " times. " + this.fileNameFormat.getPath());
+                        LOG.info("Compressed file closed, tried  " + (i + 1) + " times.");
                         break;
                     } catch (IOException ie) {
                         LOG.info("Can not close compressionOutput for " + i + " times + waiting 200ms .");
